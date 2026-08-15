@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"strings"
 	_ "github.com/lib/pq"
+	"database/sql"
+	"chirpy/internal/database"
+	"os"
 )
 
 func handleHealthz(w http.ResponseWriter, request *http.Request) {
@@ -20,6 +23,7 @@ func handleHealthz(w http.ResponseWriter, request *http.Request) {
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	dbQueries *database.Queries
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -126,7 +130,14 @@ func (cfg *apiConfig) handleValidateChirp(w http.ResponseWriter, request *http.R
 
 func main() {
 
-	apiCfg := apiConfig{}
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		fmt.Printf("%v\n", err)
+	}
+
+	dbQueries := database.New(db)
+	apiCfg := apiConfig{dbQueries: dbQueries}
 
 	serveMux := http.NewServeMux()
 
@@ -143,7 +154,7 @@ func main() {
 		apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))),
 	)
 
-	err := server.ListenAndServe()
+	err = server.ListenAndServe()
 	if err != nil {
 		fmt.Printf("%v\n", err)
 	}
