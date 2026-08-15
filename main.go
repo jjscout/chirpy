@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"encoding/json"
 	"strings"
+	_ "github.com/lib/pq"
 )
 
 func handleHealthz(w http.ResponseWriter, request *http.Request) {
