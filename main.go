@@ -1,6 +1,9 @@
 package main
 
 import (
+	"chirpy/internal/database"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync/atomic"
@@ -23,7 +26,8 @@ func handleHealthz(w http.ResponseWriter, request *http.Request) {
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
-	dbQueries *database.Queries
+	dbQueries      *database.Queries
+	platform       string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -37,6 +41,17 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 }
 
 func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
+	if cfg.platform != "dev" {
+		respondWithError(w, http.StatusForbidden, "Forbidden")
+		return
+	}
+
+	err := cfg.dbQueries.DeleteUsers(r.Context())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("error: %v", err))
+		return
+	}
+
     cfg.fileserverHits.Store(0)
     w.WriteHeader(http.StatusOK)
     w.Write([]byte("Hits reset to 0"))
@@ -45,15 +60,14 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 func (cfg *apiConfig) handleRequestsCount(w http.ResponseWriter, request *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, err := w.Write([]byte(fmt.Sprintf(
+	_, err := fmt.Fprintf(w,
 		`<html>
   <body>
     <h1>Welcome, Chirpy Admin</h1>
     <p>Chirpy has been visited %d times!</p>
   </body>
 </html>`,
-		cfg.fileserverHits.Load(),
-	)))
+		cfg.fileserverHits.Load())
 	if err != nil {
 		fmt.Printf("%v\n", err)
 	}
@@ -128,16 +142,67 @@ func (cfg *apiConfig) handleValidateChirp(w http.ResponseWriter, request *http.R
 	respondWithJSON(w, 200, response{Body: filtered})
 }
 
+func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+	type createRequest struct {
+		Email string `json:"email"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	p := createRequest{}
+	err := decoder.Decode(&p)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
+		return
+	}
+	user, err := cfg.dbQueries.CreateUser(r.Context(), p.Email)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
+		return
+	}
+	type createResponse struct {
+		Id        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string    `json:"email"`
+	}
+	respondWithJSON(
+		w,
+		201,
+		createResponse{
+			Id:        user.ID,
+			CreatedAt: user.CreatedAt,
+			UpdatedAt: user.UpdatedAt,
+			Email:     user.Email,
+		},
+	)
+}
+
 func main() {
+	err := godotenv.Load()
+	if err != nil {
+		fmt.Printf("warning: couldn't load .env file: %v\n", err)
+	}
 
 	dbURL := os.Getenv("DB_URL")
+	if dbURL == "" {
+		fmt.Println("DB_URL must be set")
+		os.Exit(1)
+	}
+
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		fmt.Printf("%v\n", err)
+		os.Exit(1)
+	}
+	if err = db.Ping(); err != nil {
+		fmt.Printf("error connecting to database: %v\n", err)
+		os.Exit(1)
 	}
 
 	dbQueries := database.New(db)
-	apiCfg := apiConfig{dbQueries: dbQueries}
+	apiCfg := apiConfig{
+		dbQueries: dbQueries,
+		platform:  os.Getenv("PLATFORM"),
+	}
 
 	serveMux := http.NewServeMux()
 
@@ -149,6 +214,7 @@ func main() {
 	serveMux.HandleFunc("GET /admin/metrics", apiCfg.handleRequestsCount)
 	serveMux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
 	serveMux.HandleFunc("POST /api/validate_chirp", apiCfg.handleValidateChirp)
+	serveMux.HandleFunc("POST /api/users", apiCfg.handleCreateUser)
 	serveMux.Handle(
 		"/app/",
 		apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))),
