@@ -6,13 +6,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sync/atomic"
-	"encoding/json"
-	"strings"
-	_ "github.com/lib/pq"
-	"database/sql"
-	"chirpy/internal/database"
 	"os"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/joho/godotenv"
+
+	_ "github.com/lib/pq"
 )
 
 func handleHealthz(w http.ResponseWriter, request *http.Request) {
@@ -31,13 +33,13 @@ type apiConfig struct {
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
-    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        // 1. Increment your counter here (runs on every request)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 1. Increment your counter here (runs on every request)
 		cfg.fileserverHits.Add(1)
-        
-        // 2. Delegate the request to the inner handler
-        next.ServeHTTP(w, r)
-    })
+
+		// 2. Delegate the request to the inner handler
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
@@ -52,9 +54,9 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-    cfg.fileserverHits.Store(0)
-    w.WriteHeader(http.StatusOK)
-    w.Write([]byte("Hits reset to 0"))
+	cfg.fileserverHits.Store(0)
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Hits reset to 0"))
 }
 
 func (cfg *apiConfig) handleRequestsCount(w http.ResponseWriter, request *http.Request) {
@@ -84,12 +86,18 @@ func respondWithError(w http.ResponseWriter, code int, msg string) {
 func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 	dat, err := json.Marshal(payload)
 	if err != nil {
-			w.WriteHeader(500)
-			return
+		w.WriteHeader(500)
+		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	w.Write(dat)
+}
+
+var profanities = []string{
+	"kerfuffle",
+	"sharbert",
+	"fornax",
 }
 
 func replaceProfanities(message string, blacklist []string) string {
@@ -109,6 +117,59 @@ func replaceProfanities(message string, blacklist []string) string {
 		}
 	}
 	return strings.Join(filtered, " ")
+}
+
+func validate(chirp string) bool {
+	return len(chirp) <= 140
+}
+
+func (cfg *apiConfig) handleCreateChirp(w http.ResponseWriter, request *http.Request) {
+	type parameters struct {
+		Body   string `json:"body"`
+		UserId string `json:"user_id"`
+	}
+	type response struct {
+		Id        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body      string    `json:"body"`
+		UserId    uuid.UUID `json:"user_id"`
+	}
+
+	decoder := json.NewDecoder(request.Body)
+	p := parameters{}
+	err := decoder.Decode(&p)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
+		return
+	}
+	if !validate(p.Body) {
+		respondWithError(w, 400, "Chirp too long")
+		return
+	}
+
+	uid, err := uuid.Parse(p.UserId)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
+		return
+	}
+
+	filtered := replaceProfanities(p.Body, profanities)
+	chirp, err := cfg.dbQueries.CreateChirp(request.Context(), database.CreateChirpParams{
+		Body:   filtered,
+		UserID: uid,
+	})
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
+		return
+	}
+	respondWithJSON(w, 201, response{
+		Id:        chirp.ID,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		Body:      chirp.Body,
+		UserId:    chirp.UserID,
+	})
 }
 
 func (cfg *apiConfig) handleValidateChirp(w http.ResponseWriter, request *http.Request) {
@@ -131,14 +192,7 @@ func (cfg *apiConfig) handleValidateChirp(w http.ResponseWriter, request *http.R
 		return
 	}
 
-	filtered := replaceProfanities(
-		p.Body,
-		[]string{
-			"kerfuffle",
-			"sharbert",
-			"fornax",
-		},
-	)
+	filtered := replaceProfanities(p.Body, profanities)
 	respondWithJSON(w, 200, response{Body: filtered})
 }
 
@@ -214,6 +268,7 @@ func main() {
 	serveMux.HandleFunc("GET /admin/metrics", apiCfg.handleRequestsCount)
 	serveMux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
 	serveMux.HandleFunc("POST /api/validate_chirp", apiCfg.handleValidateChirp)
+	serveMux.HandleFunc("POST /api/chirps", apiCfg.handleCreateChirp)
 	serveMux.HandleFunc("POST /api/users", apiCfg.handleCreateUser)
 	serveMux.Handle(
 		"/app/",
