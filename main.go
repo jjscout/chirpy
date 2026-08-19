@@ -230,6 +230,34 @@ func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	)
 }
 
+func (cfg *apiConfig) handleGetChirps(w http.ResponseWriter, r *http.Request) {
+	chirps, err := cfg.dbQueries.GetAllChirps(r.Context())
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
+		return
+	}
+	type chirpResponse struct {
+		Id        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body      string    `json:"body"`
+		UserId    uuid.UUID `json:"user_id"`
+	}
+
+	chirpResponses := make([]chirpResponse, len(chirps))
+	for i, chirp := range chirps {
+		chirpResponses[i] = chirpResponse{
+			Id:        chirp.ID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt,
+			Body:      chirp.Body,
+			UserId:    chirp.UserID,
+		}
+	}
+
+	respondWithJSON(w, 200, chirpResponses)
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -270,6 +298,7 @@ func main() {
 	serveMux.HandleFunc("POST /api/validate_chirp", apiCfg.handleValidateChirp)
 	serveMux.HandleFunc("POST /api/chirps", apiCfg.handleCreateChirp)
 	serveMux.HandleFunc("POST /api/users", apiCfg.handleCreateUser)
+	serveMux.HandleFunc("GET /api/chirps", apiCfg.handleGetChirps)
 	serveMux.Handle(
 		"/app/",
 		apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))),
