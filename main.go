@@ -4,6 +4,7 @@ import (
 	"chirpy/internal/database"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -258,6 +259,43 @@ func (cfg *apiConfig) handleGetChirps(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, 200, chirpResponses)
 }
 
+func (cfg *apiConfig) handleGetChirpByID(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	idU, err := uuid.Parse(id)
+	fmt.Printf("idU: %v, err: %v\n", idU, err)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
+		return
+	}
+	chirp, err := cfg.dbQueries.GetChirpByID(r.Context(), idU)
+	fmt.Printf("chirp: %v, err: %v\n", chirp, err)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondWithError(w, 404, "Chirp not found")
+			return
+		}
+		respondWithError(w, 500, fmt.Sprintf("database query error: %v", err))
+		return
+	}
+	type chirpResponse struct {
+		Id        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body      string    `json:"body"`
+		UserId    uuid.UUID `json:"user_id"`
+	}
+
+	response := chirpResponse{
+		Id:        chirp.ID,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		Body:      chirp.Body,
+		UserId:    chirp.UserID,
+	}
+
+	respondWithJSON(w, 200, response)
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -299,6 +337,7 @@ func main() {
 	serveMux.HandleFunc("POST /api/chirps", apiCfg.handleCreateChirp)
 	serveMux.HandleFunc("POST /api/users", apiCfg.handleCreateUser)
 	serveMux.HandleFunc("GET /api/chirps", apiCfg.handleGetChirps)
+	serveMux.HandleFunc("GET /api/chirps/{id}", apiCfg.handleGetChirpByID)
 	serveMux.Handle(
 		"/app/",
 		apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))),
