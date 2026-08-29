@@ -1,6 +1,7 @@
 package main
 
 import (
+	"chirpy/internal/auth"
 	"chirpy/internal/database"
 	"database/sql"
 	"encoding/json"
@@ -197,9 +198,17 @@ func (cfg *apiConfig) handleValidateChirp(w http.ResponseWriter, request *http.R
 	respondWithJSON(w, 200, response{Body: filtered})
 }
 
+type createResponse struct {
+	Id        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
+}
+
 func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	type createRequest struct {
-		Email string `json:"email"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	p := createRequest{}
@@ -208,17 +217,22 @@ func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
 		return
 	}
-	user, err := cfg.dbQueries.CreateUser(r.Context(), p.Email)
+	passwordHash, err := auth.HashPassword(p.Password)
 	if err != nil {
 		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
 		return
 	}
-	type createResponse struct {
-		Id        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email     string    `json:"email"`
+	createUserParams := database.CreateUserParams{
+		Email:          p.Email,
+		HashedPassword: passwordHash,
 	}
+	user, err := cfg.dbQueries.CreateUser(r.Context(), createUserParams)
+
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
+		return
+	}
+
 	respondWithJSON(
 		w,
 		201,
@@ -229,6 +243,41 @@ func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 			Email:     user.Email,
 		},
 	)
+}
+
+func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
+	type loginRequest struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	p := loginRequest{}
+	err := decoder.Decode(&p)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
+		return
+	}
+	user, err := cfg.dbQueries.GetUserByEmail(r.Context(), p.Email)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
+		return
+	}
+	passwordMatch, err := auth.CheckPasswordHash(p.Password, user.HashedPassword)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
+		return
+	}
+	if !passwordMatch {
+		respondWithError(w, 401, "Invalid credentials")
+		return
+	}
+	respondWithJSON(w, 200, createResponse{
+		Id:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+	})
+
 }
 
 func (cfg *apiConfig) handleGetChirps(w http.ResponseWriter, r *http.Request) {
@@ -336,6 +385,7 @@ func main() {
 	serveMux.HandleFunc("POST /api/validate_chirp", apiCfg.handleValidateChirp)
 	serveMux.HandleFunc("POST /api/chirps", apiCfg.handleCreateChirp)
 	serveMux.HandleFunc("POST /api/users", apiCfg.handleCreateUser)
+	serveMux.HandleFunc("POST /api/login", apiCfg.handleLogin)
 	serveMux.HandleFunc("GET /api/chirps", apiCfg.handleGetChirps)
 	serveMux.HandleFunc("GET /api/chirps/{id}", apiCfg.handleGetChirpByID)
 	serveMux.Handle(
