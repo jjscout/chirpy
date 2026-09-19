@@ -1,4 +1,4 @@
 out
 .env
-internal/*
+internal/database/*
 chirpy
