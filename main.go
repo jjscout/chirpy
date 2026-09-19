@@ -32,6 +32,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
 	platform       string
+	jwtSecret      string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -137,10 +138,19 @@ func (cfg *apiConfig) handleCreateChirp(w http.ResponseWriter, request *http.Req
 		Body      string    `json:"body"`
 		UserId    uuid.UUID `json:"user_id"`
 	}
-
+	token, err := auth.GetBearerToken(request.Header)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
 	decoder := json.NewDecoder(request.Body)
 	p := parameters{}
-	err := decoder.Decode(&p)
+	err = decoder.Decode(&p)
 	if err != nil {
 		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
 		return
@@ -150,16 +160,10 @@ func (cfg *apiConfig) handleCreateChirp(w http.ResponseWriter, request *http.Req
 		return
 	}
 
-	uid, err := uuid.Parse(p.UserId)
-	if err != nil {
-		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
-		return
-	}
-
 	filtered := replaceProfanities(p.Body, profanities)
 	chirp, err := cfg.dbQueries.CreateChirp(request.Context(), database.CreateChirpParams{
 		Body:   filtered,
-		UserID: uid,
+		UserID: userID,
 	})
 	if err != nil {
 		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
@@ -203,6 +207,7 @@ type createResponse struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+	Token     string    `json:"token"`
 }
 
 func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, r *http.Request) {
@@ -247,8 +252,9 @@ func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 	type loginRequest struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email            string `json:"email"`
+		Password         string `json:"password"`
+		ExpiresInSeconds *int   `json:"expires_in_seconds,omitempty"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	p := loginRequest{}
@@ -271,11 +277,22 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 401, "Invalid credentials")
 		return
 	}
+	defaultDuration := time.Hour
+	duration := defaultDuration
+	if p.ExpiresInSeconds != nil && *p.ExpiresInSeconds > 0 {
+		duration = time.Duration(*p.ExpiresInSeconds) * time.Second
+	}
+	token, err := auth.MakeJWT(user.ID, cfg.jwtSecret, duration)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
+		return
+	}
 	respondWithJSON(w, 200, createResponse{
 		Id:        user.ID,
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email:     user.Email,
+		Token:     token,
 	})
 
 }
@@ -367,10 +384,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		fmt.Println("JWT_SECRET must be set")
+		os.Exit(1)
+	}
+
 	dbQueries := database.New(db)
 	apiCfg := apiConfig{
 		dbQueries: dbQueries,
 		platform:  os.Getenv("PLATFORM"),
+		jwtSecret: jwtSecret,
 	}
 
 	serveMux := http.NewServeMux()
