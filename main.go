@@ -203,11 +203,12 @@ func (cfg *apiConfig) handleValidateChirp(w http.ResponseWriter, request *http.R
 }
 
 type createResponse struct {
-	Id        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
-	Token     string    `json:"token"`
+	Id           uuid.UUID `json:"id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Email        string    `json:"email"`
+	Token        string    `json:"token"`
+	RefreshToken string    `json:"refresh_token"`
 }
 
 func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, r *http.Request) {
@@ -252,9 +253,8 @@ func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 	type loginRequest struct {
-		Email            string `json:"email"`
-		Password         string `json:"password"`
-		ExpiresInSeconds *int   `json:"expires_in_seconds,omitempty"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	p := loginRequest{}
@@ -277,22 +277,31 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 401, "Invalid credentials")
 		return
 	}
-	defaultDuration := time.Hour
-	duration := defaultDuration
-	if p.ExpiresInSeconds != nil && *p.ExpiresInSeconds > 0 {
-		duration = time.Duration(*p.ExpiresInSeconds) * time.Second
+	accessTokenDuration := time.Hour
+	token, err := auth.MakeJWT(user.ID, cfg.jwtSecret, accessTokenDuration)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
+		return
 	}
-	token, err := auth.MakeJWT(user.ID, cfg.jwtSecret, duration)
+	refreshToken := auth.MakeRefreshToken()
+
+	refreshTokenDuration := 60 * 24 * time.Hour
+	_, err = cfg.dbQueries.AddRefreshToken(r.Context(), database.AddRefreshTokenParams{
+		Token:     refreshToken,
+		UserID:    user.ID,
+		ExpiresIn: int32(refreshTokenDuration.Hours()),
+	})
 	if err != nil {
 		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
 		return
 	}
 	respondWithJSON(w, 200, createResponse{
-		Id:        user.ID,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email:     user.Email,
-		Token:     token,
+		Id:           user.ID,
+		CreatedAt:    user.CreatedAt,
+		UpdatedAt:    user.UpdatedAt,
+		Email:        user.Email,
+		Token:        token,
+		RefreshToken: refreshToken,
 	})
 
 }
