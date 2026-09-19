@@ -306,6 +306,48 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 }
 
+func (cfg *apiConfig) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+
+	refreshToken, err := cfg.dbQueries.GetValidRefreshToken(r.Context(), token)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+	accessTokenDuration := time.Hour
+	accessToken, err := auth.MakeJWT(refreshToken.UserID, cfg.jwtSecret, accessTokenDuration)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
+		return
+	}
+
+	respondWithJSON(w, 200, createResponse{
+		Token: accessToken,
+	})
+
+}
+
+func (cfg *apiConfig) handleRevoke(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+
+	_, err = cfg.dbQueries.RevokeRefreshToken(r.Context(), token)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+
+	respondWithJSON(w, 204, nil)
+
+}
+
 func (cfg *apiConfig) handleGetChirps(w http.ResponseWriter, r *http.Request) {
 	chirps, err := cfg.dbQueries.GetAllChirps(r.Context())
 	if err != nil {
@@ -419,6 +461,8 @@ func main() {
 	serveMux.HandleFunc("POST /api/chirps", apiCfg.handleCreateChirp)
 	serveMux.HandleFunc("POST /api/users", apiCfg.handleCreateUser)
 	serveMux.HandleFunc("POST /api/login", apiCfg.handleLogin)
+	serveMux.HandleFunc("POST /api/refresh", apiCfg.handleRefresh)
+	serveMux.HandleFunc("POST /api/revoke", apiCfg.handleRevoke)
 	serveMux.HandleFunc("GET /api/chirps", apiCfg.handleGetChirps)
 	serveMux.HandleFunc("GET /api/chirps/{id}", apiCfg.handleGetChirpByID)
 	serveMux.Handle(
