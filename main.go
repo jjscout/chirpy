@@ -251,6 +251,57 @@ func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	)
 }
 
+func (cfg *apiConfig) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
+	type updateRequest struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	p := updateRequest{}
+	err := decoder.Decode(&p)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
+		return
+	}
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+	passwordHash, err := auth.HashPassword(p.Password)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
+		return
+	}
+	updateUserParams := database.UpdateUserParams{
+		Email:          p.Email,
+		HashedPassword: passwordHash,
+		ID:             userID,
+	}
+	user, err := cfg.dbQueries.UpdateUser(r.Context(), updateUserParams)
+
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
+		return
+	}
+
+	respondWithJSON(
+		w,
+		200,
+		createResponse{
+			Id:        user.ID,
+			CreatedAt: user.CreatedAt,
+			UpdatedAt: user.UpdatedAt,
+			Email:     user.Email,
+		},
+	)
+}
+
 func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 	type loginRequest struct {
 		Email    string `json:"email"`
@@ -460,6 +511,7 @@ func main() {
 	serveMux.HandleFunc("POST /api/validate_chirp", apiCfg.handleValidateChirp)
 	serveMux.HandleFunc("POST /api/chirps", apiCfg.handleCreateChirp)
 	serveMux.HandleFunc("POST /api/users", apiCfg.handleCreateUser)
+	serveMux.HandleFunc("PUT /api/users", apiCfg.handleUpdateUser)
 	serveMux.HandleFunc("POST /api/login", apiCfg.handleLogin)
 	serveMux.HandleFunc("POST /api/refresh", apiCfg.handleRefresh)
 	serveMux.HandleFunc("POST /api/revoke", apiCfg.handleRevoke)
