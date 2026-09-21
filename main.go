@@ -464,6 +464,44 @@ func (cfg *apiConfig) handleGetChirpByID(w http.ResponseWriter, r *http.Request)
 	respondWithJSON(w, 200, response)
 }
 
+func (cfg *apiConfig) handleDeleteChirp(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	idU, err := uuid.Parse(id)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
+		return
+	}
+	chirp, err := cfg.dbQueries.GetChirpByID(r.Context(), idU)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondWithError(w, 404, "Chirp not found")
+			return
+		}
+		respondWithError(w, 500, fmt.Sprintf("database query error: %v", err))
+		return
+	}
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
+	if err != nil {
+		respondWithError(w, 401, "Unauthorized")
+		return
+	}
+	if chirp.UserID != userID {
+		respondWithError(w, 403, "Forbidden")
+		return
+	}
+	err = cfg.dbQueries.DeleteChirpByID(r.Context(), idU)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error: %v", err))
+		return
+	}
+	respondWithJSON(w, 204, nil)
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -508,15 +546,16 @@ func main() {
 	serveMux.HandleFunc("GET /api/healthz", handleHealthz)
 	serveMux.HandleFunc("GET /admin/metrics", apiCfg.handleRequestsCount)
 	serveMux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
-	serveMux.HandleFunc("POST /api/validate_chirp", apiCfg.handleValidateChirp)
-	serveMux.HandleFunc("POST /api/chirps", apiCfg.handleCreateChirp)
 	serveMux.HandleFunc("POST /api/users", apiCfg.handleCreateUser)
 	serveMux.HandleFunc("PUT /api/users", apiCfg.handleUpdateUser)
 	serveMux.HandleFunc("POST /api/login", apiCfg.handleLogin)
 	serveMux.HandleFunc("POST /api/refresh", apiCfg.handleRefresh)
 	serveMux.HandleFunc("POST /api/revoke", apiCfg.handleRevoke)
+	serveMux.HandleFunc("POST /api/validate_chirp", apiCfg.handleValidateChirp)
+	serveMux.HandleFunc("POST /api/chirps", apiCfg.handleCreateChirp)
 	serveMux.HandleFunc("GET /api/chirps", apiCfg.handleGetChirps)
 	serveMux.HandleFunc("GET /api/chirps/{id}", apiCfg.handleGetChirpByID)
+	serveMux.HandleFunc("DELETE /api/chirps/{id}", apiCfg.handleDeleteChirp)
 	serveMux.Handle(
 		"/app/",
 		apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))),
